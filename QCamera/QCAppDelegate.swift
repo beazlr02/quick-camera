@@ -10,11 +10,20 @@ import Cocoa
 import AVKit
 import AVFoundation
 
+@available(OSX 10.15, *)
 @NSApplicationMain
-class QCAppDelegate: NSObject, NSApplicationDelegate {
+class QCAppDelegate: NSObject, NSApplicationDelegate, QCUsbWatcherDelegate {
+    
+    func deviceCountChanged() {
+        self.detectVideoDevices()
+        self.updateSourceResolutionsMenu(forDeviceAtIndex:selectedDeviceIndex)
+        self.startCaptureWithVideoDevice(defaultDevice: selectedDeviceIndex)
+    }
+    
     
     @IBOutlet weak var window: NSWindow!
     @IBOutlet weak var selectSourceMenu: NSMenuItem!
+    @IBOutlet weak var selectSourceResolution: NSMenuItem!
     @IBOutlet weak var playerView: AVPlayerView!
     
     var isMirrored: Bool = false;
@@ -26,7 +35,9 @@ class QCAppDelegate: NSObject, NSApplicationDelegate {
     var isBorderless: Bool = false;
     var defaultBorderStyle: NSWindow.StyleMask = NSWindow.StyleMask.closable;
     var windowTitle = "Quick Camera";
-    var defaultDeviceIndex: Int = 0;
+    let defaultDeviceIndex: Int = 0;
+    var selectedDeviceIndex: Int = 0
+    var selectedSourceResolution: Int = -1
     
     var devices: [AVCaptureDevice]!;
     var captureSession: AVCaptureSession!;
@@ -48,12 +59,21 @@ class QCAppDelegate: NSObject, NSApplicationDelegate {
         let deviceMenu = NSMenu();
         var deviceIndex = 0;
         
+        var currentdevice = self.devices[defaultDeviceIndex]
+        
+        if(self.captureSession != nil) {
+            currentdevice = (self.captureSession.inputs[0] as! AVCaptureDeviceInput).device
+        }
+        
+        self.selectedDeviceIndex = defaultDeviceIndex
+        
         for device in self.devices {
             let deviceMenuItem = NSMenuItem(title: device.localizedName, action: #selector(deviceMenuChanged), keyEquivalent: "")
             deviceMenuItem.target = self;
             deviceMenuItem.representedObject = deviceIndex;
-            if (deviceIndex == defaultDeviceIndex) {
+            if (device == currentdevice) {
                 deviceMenuItem.state = NSControl.StateValue.on;
+                self.selectedDeviceIndex = deviceIndex
             }
             if (deviceIndex < 9) {
                 deviceMenuItem.keyEquivalent = String(deviceIndex + 1);
@@ -62,20 +82,64 @@ class QCAppDelegate: NSObject, NSApplicationDelegate {
             deviceIndex += 1;
         }
         selectSourceMenu.submenu = deviceMenu;
+        
     }
+    
+    func redetectVideoDevices() {
+        NSLog("Detecting video devices...");
+        self.devices = AVCaptureDevice.devices(for: AVMediaType.video);
+        
+        let deviceMenu = NSMenu();
+        var deviceIndex = 0;
+        
+        let currentdevice = (self.captureSession.inputs[0] as! AVCaptureDeviceInput).device
+        var foundDeviceIdx = defaultDeviceIndex
+        
+        for device in self.devices {
+            let deviceMenuItem = NSMenuItem(title: device.localizedName, action: #selector(deviceMenuChanged), keyEquivalent: "")
+            deviceMenuItem.target = self;
+            deviceMenuItem.representedObject = deviceIndex;
+            // THIS NEEDS TO BE RECALCULATED AFTER HOTPLUG EVENT
+            if (device == currentdevice) {
+                deviceMenuItem.state = NSControl.StateValue.on;
+                foundDeviceIdx = deviceIndex
+            }
+            if (deviceIndex < 9) {
+                deviceMenuItem.keyEquivalent = String(deviceIndex + 1);
+            }
+            deviceMenu.addItem(deviceMenuItem);
+            deviceIndex += 1;
+        }
+        selectSourceMenu.submenu = deviceMenu;
+        
+        self.updateSourceResolutionsMenu(forDeviceAtIndex:foundDeviceIdx)
+        self.startCaptureWithVideoDevice(defaultDevice: foundDeviceIdx)
+    
+    }
+    
     
     func startCaptureWithVideoDevice(defaultDevice: Int) {
         NSLog("Starting capture with device index %d", defaultDevice);
+        
+        let device: AVCaptureDevice = self.devices[defaultDevice];
+        
         if (captureSession != nil) {
+            let currentdevice = (self.captureSession.inputs[0] as! AVCaptureDeviceInput).device
+            guard currentdevice != device else { return }
             captureSession.stopRunning();
         }
-        captureSession = AVCaptureSession();
-        let device: AVCaptureDevice = self.devices[defaultDevice];
+        
+        captureSession = AVCaptureSession()
+        
         do {
-            let input: AVCaptureDeviceInput = try AVCaptureDeviceInput(device: device);
+            let input = try AVCaptureDeviceInput(device: device);
+            
             self.captureSession.addInput(input);
             self.captureSession.startRunning();
             self.captureLayer = AVCaptureVideoPreviewLayer(session: self.captureSession);
+            
+            self.applyResolutionToDevice()
+            
             self.captureLayer.connection?.automaticallyAdjustsVideoMirroring = false;
             self.captureLayer.connection?.isVideoMirrored = false;
             self.playerView.layer = self.captureLayer;
@@ -83,6 +147,7 @@ class QCAppDelegate: NSObject, NSApplicationDelegate {
             self.playerView.layer?.backgroundColor = CGColor.black;
             self.windowTitle = String(format: "Quick Camera: [%@]", device.localizedName);
             self.window.title = self.windowTitle;
+
         } catch {
             NSLog("Error while opening device");
             let popup = NSAlert();
@@ -181,16 +246,84 @@ class QCAppDelegate: NSObject, NSApplicationDelegate {
         }
         sender.state = NSControl.StateValue.on;
         
-        self.startCaptureWithVideoDevice(defaultDevice: sender.representedObject as! Int)
+        let selectedDeviceIndex = sender.representedObject as! Int
+        
+        self.updateSourceResolutionsMenu(forDeviceAtIndex: selectedDeviceIndex)
+        
+        self.startCaptureWithVideoDevice(defaultDevice: selectedDeviceIndex)
     }
     
+    var usb : QCUsbWatcher!
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         detectVideoDevices();
-        startCaptureWithVideoDevice(defaultDevice: defaultDeviceIndex);
+        updateSourceResolutionsMenu(forDeviceAtIndex:selectedDeviceIndex)
+        startCaptureWithVideoDevice(defaultDevice: selectedDeviceIndex);
+        usb = QCUsbWatcher()
+        usb.delegate = self
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true;
+    }
+    
+    
+    // MARK - source resolutions
+    func updateSourceResolutionsMenu(forDeviceAtIndex:Int) {
+        
+        let selectedDevice = self.devices[forDeviceAtIndex]
+        let deviceMenu = NSMenu();
+        
+        var resIndex = 0;
+        for res in selectedDevice.formats {
+            
+            let menuTitle = "\(res.formatDescription.dimensions.width)x\(res.formatDescription.dimensions.height)      [\(res.formatDescription.mediaType.description)/\(res.formatDescription.mediaSubType.description)]"
+            
+            let deviceMenuItem = NSMenuItem(title: menuTitle, action: #selector(sourceResolutionsMenuChanged), keyEquivalent: "")
+            deviceMenuItem.target = self;
+            deviceMenuItem.representedObject = resIndex;
+            
+            if(selectedDevice.activeFormat == res) {
+                deviceMenuItem.state = NSControl.StateValue.on;
+                self.selectedSourceResolution = resIndex
+            }
+            
+            deviceMenu.addItem(deviceMenuItem);
+            
+            resIndex += 1;
+
+            selectSourceResolution.submenu = deviceMenu;
+        }
+    }
+        
+    @objc func sourceResolutionsMenuChanged(_ sender: NSMenuItem)
+    {
+        if (sender.state == NSControl.StateValue.on) {
+            return;
+        }
+        
+        for menuItem: NSMenuItem in sender.parent!.submenu!.items {
+            menuItem.state = NSControl.StateValue.off;
+        }
+        sender.state = NSControl.StateValue.on;
+        
+        self.selectedSourceResolution = sender.representedObject as! Int
+        
+        self.applyResolutionToDevice()
+    }
+    
+    func applyResolutionToDevice()
+    {
+        let device = (self.captureSession.inputs[0] as! AVCaptureDeviceInput).device
+        try! device.lockForConfiguration()
+        
+        let format = device.formats[selectedSourceResolution]
+        device.activeFormat = format
+        
+        let maxFrameRateDuration = format.videoSupportedFrameRateRanges.reduce(CMTime.positiveInfinity) { (res, e) -> CMTime in
+            CMTimeMinimum(res, e.minFrameDuration)
+        }
+        device.activeVideoMinFrameDuration = maxFrameRateDuration
+        device.unlockForConfiguration()
     }
     
 }
