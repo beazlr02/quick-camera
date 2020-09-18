@@ -85,39 +85,6 @@ class QCAppDelegate: NSObject, NSApplicationDelegate, QCUsbWatcherDelegate {
         
     }
     
-    func redetectVideoDevices() {
-        NSLog("Detecting video devices...");
-        self.devices = AVCaptureDevice.devices(for: AVMediaType.video);
-        
-        let deviceMenu = NSMenu();
-        var deviceIndex = 0;
-        
-        let currentdevice = (self.captureSession.inputs[0] as! AVCaptureDeviceInput).device
-        var foundDeviceIdx = defaultDeviceIndex
-        
-        for device in self.devices {
-            let deviceMenuItem = NSMenuItem(title: device.localizedName, action: #selector(deviceMenuChanged), keyEquivalent: "")
-            deviceMenuItem.target = self;
-            deviceMenuItem.representedObject = deviceIndex;
-            // THIS NEEDS TO BE RECALCULATED AFTER HOTPLUG EVENT
-            if (device == currentdevice) {
-                deviceMenuItem.state = NSControl.StateValue.on;
-                foundDeviceIdx = deviceIndex
-            }
-            if (deviceIndex < 9) {
-                deviceMenuItem.keyEquivalent = String(deviceIndex + 1);
-            }
-            deviceMenu.addItem(deviceMenuItem);
-            deviceIndex += 1;
-        }
-        selectSourceMenu.submenu = deviceMenu;
-        
-        self.updateSourceResolutionsMenu(forDeviceAtIndex:foundDeviceIdx)
-        self.startCaptureWithVideoDevice(defaultDevice: foundDeviceIdx)
-    
-    }
-    
-    
     func startCaptureWithVideoDevice(defaultDevice: Int) {
         NSLog("Starting capture with device index %d", defaultDevice);
         

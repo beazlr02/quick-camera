@@ -9,22 +9,16 @@ import IOKit
 import IOKit.usb
 import IOKit.usb.IOUSBLib
 public protocol QCUsbWatcherDelegate: class {
-    
     func deviceCountChanged()
 }
-/// An object which observes USB devices added and removed from the system.
-/// Abstracts away most of the ugliness of IOKit APIs.
+
 public class QCUsbWatcher {
     public weak var delegate: QCUsbWatcherDelegate?
     private let notificationPort = IONotificationPortCreate(kIOMasterPortDefault)
     private var addedIterator: io_iterator_t = 0
     private var removedIterator: io_iterator_t = 0
-
-
     
     public init() {
-        //self.delegate = delegate
-    
         func handleNotification(instance: UnsafeMutableRawPointer?, _ iterator: io_iterator_t) {
             let watcher = Unmanaged<QCUsbWatcher>.fromOpaque(instance!).takeUnretainedValue()
             while case let device = IOIteratorNext(iterator), device != IO_OBJECT_NULL {
